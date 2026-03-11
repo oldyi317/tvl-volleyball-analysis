@@ -49,7 +49,21 @@ POSITIONS = ["主攻手", "副攻手", "中間手", "舉球員", "自由球員",
 STAT_COLUMNS = ["攻擊", "攔網", "發球", "接發球", "防守", "舉球"]
 PCT_COLUMNS = [f"{c}%" for c in STAT_COLUMNS]
 
-# === 對手列表 ===
+# === Opponent name mapping (historical → current) ===
+OPPONENT_NAME_MAP = {
+    "中國人纖": "新北中纖",
+    "新北中國人纖": "新北中纖",
+    "凱薩飯店": "義力營造",
+    "凱撒飯店": "義力營造",
+    "愛山林": "義力營造",
+    "高雄台電女排": "高雄台電",
+    "臺北鯨華": "臺北鯨華",
+}
+
+# Playoff matches: map to actual opponent
+PLAYOFF_TAGS = ["挑戰賽", "季後賽", "冠軍賽"]
+
+# === Opponents (current names) ===
 OPPONENTS = ["高雄台電", "新北中纖", "義力營造"]
 
 # === 視覺化 ===

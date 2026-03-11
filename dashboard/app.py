@@ -1,11 +1,9 @@
 """
-TVL 企業排球聯賽 — 女子組互動儀表板
-啟動方式：streamlit run dashboard/app.py
+TVL 企業排球聯賽 — 女子組互動儀表板 v2
+Fixes: team colors, radar visibility, NaN handling, position filter, layout
 """
 import sys
 from pathlib import Path
-
-# 確保專案根目錄在 sys.path
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -15,90 +13,96 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from config.settings import PROCESSED_DIR, MODELS_DIR, WOMEN_TEAMS, STAT_COLUMNS, SEASON
+from config.settings import PROCESSED_DIR, MODELS_DIR, WOMEN_TEAMS, STAT_COLUMNS, SEASON, PLAYOFF_TAGS
 
-# ======== 頁面設定 ========
-st.set_page_config(
-    page_title="TVL 女子組數據儀表板",
-    page_icon="🏐",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ======== Page config ========
+st.set_page_config(page_title="TVL 女子組數據儀表板", page_icon="🏐", layout="wide", initial_sidebar_state="expanded")
 
-# ======== 隊伍配色 ========
+# ======== Colors ========
 TEAM_COLORS = {name: info["color"] for name, info in WOMEN_TEAMS.items()}
-TEAM_ACCENTS = {name: info["accent"] for name, info in WOMEN_TEAMS.items()}
-POS_COLORS = {
-    "主攻手": "#E63946", "中間手": "#457B9D", "舉球員": "#2A9D8F",
-    "自由球員": "#E9C46A", "副攻手": "#F4A261", "攻擊手": "#8338EC",
-}
-
+POS_COLORS = {"主攻手": "#E63946", "中間手": "#457B9D", "舉球員": "#2A9D8F",
+              "自由球員": "#E9C46A", "副攻手": "#F4A261", "攻擊手": "#8338EC"}
 
 def _hex_to_rgba(hex_color: str, alpha: float = 0.2) -> str:
-    """將 hex 色碼轉為 rgba 字串（Plotly 不支援 8 位 hex）"""
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
-
-# ======== 資料載入（快取） ========
+# ======== Data loading ========
 @st.cache_data
 def load_data():
-    """載入清洗後的 CSV 資料"""
-    data = {}
-
     p_path = PROCESSED_DIR / "players_clean.csv"
     m_path = PROCESSED_DIR / "matches_clean.csv"
     s_path = PROCESSED_DIR / "player_stats_summary.csv"
-
     if not p_path.exists():
         return None
 
-    data["players"] = pd.read_csv(p_path)
-    data["matches"] = pd.read_csv(m_path, parse_dates=["比賽日期"]) if m_path.exists() else pd.DataFrame()
-    data["summary"] = pd.read_csv(s_path) if s_path.exists() else pd.DataFrame()
+    players = pd.read_csv(p_path)
+    matches = pd.read_csv(m_path, parse_dates=["比賽日期"]) if m_path.exists() else pd.DataFrame()
+    summary = pd.read_csv(s_path) if s_path.exists() else pd.DataFrame()
 
-    # 確保球隊欄位存在
-    for df_key in ["players", "matches", "summary"]:
-        if "球隊" not in data[df_key].columns and not data[df_key].empty:
-            data[df_key]["球隊"] = "未知"
+    # Ensure team column exists everywhere
+    for df in [players, matches, summary]:
+        if not df.empty and "球隊" not in df.columns:
+            df["球隊"] = "未知"
 
-    return data
+    # If summary still has "未知", try merging from players
+    if not summary.empty and "player_id" in summary.columns and "player_id" in players.columns:
+        if summary["球隊"].eq("未知").all() or summary["球隊"].isna().all():
+            team_map = players.set_index("player_id")["球隊"].to_dict()
+            summary["球隊"] = summary["player_id"].map(team_map).fillna("未知")
+
+    # Also merge position into summary if missing
+    if not summary.empty and "位置" not in summary.columns and "player_id" in summary.columns:
+        if "player_id" in players.columns and "位置" in players.columns:
+            pos_map = players.set_index("player_id")["位置"].to_dict()
+            summary["位置"] = summary["player_id"].map(pos_map)
+
+    return {"players": players, "matches": matches, "summary": summary}
 
 
-# ======== 自訂 CSS ========
+# ======== CSS ========
 def inject_css():
-    st.markdown("""
-    <style>
+    st.markdown("""<style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
     html, body, [class*="st-"] { font-family: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif; }
     .main .block-container { padding-top: 1.5rem; max-width: 1400px; }
     div[data-testid="stMetric"] {
         background: linear-gradient(135deg, #0f1923 0%, #1a2d42 100%);
-        border: 1px solid rgba(74,144,217,0.15);
-        border-radius: 12px; padding: 16px 20px;
+        border: 1px solid rgba(74,144,217,0.15); border-radius: 12px; padding: 16px 20px;
     }
     div[data-testid="stMetric"] label { color: #8899aa !important; font-size: 0.85rem; }
     div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #fff !important; font-weight: 800; }
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px; padding: 8px 20px;
-        font-weight: 600; font-size: 0.9rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    </style>""", unsafe_allow_html=True)
 
 
-# ======== 頁面：總覽 ========
-def page_overview(data, team_filter):
-    players = data["players"]
-    summary = data["summary"]
+# ======== Filters ========
+def apply_filters(data, team_filter, pos_filter):
+    """Apply team and position filters to all dataframes."""
+    players = data["players"].copy()
+    matches = data["matches"].copy()
+    summary = data["summary"].copy()
 
     if team_filter != "全聯盟":
-        players = players[players["球隊"] == team_filter]
-        summary = summary[summary.get("球隊", pd.Series(dtype=str)) == team_filter] if "球隊" in summary.columns else summary
+        if "球隊" in players.columns: players = players[players["球隊"] == team_filter]
+        if "球隊" in matches.columns: matches = matches[matches["球隊"] == team_filter]
+        if "球隊" in summary.columns: summary = summary[summary["球隊"] == team_filter]
 
-    # 指標卡片
+    if pos_filter != "全部位置":
+        if "位置" in players.columns: players = players[players["位置"] == pos_filter]
+        if "位置" in summary.columns: summary = summary[summary["位置"] == pos_filter]
+        # For matches, filter by player_ids in filtered players
+        if "player_id" in players.columns and "player_id" in matches.columns:
+            matches = matches[matches["player_id"].isin(players["player_id"])]
+
+    return {"players": players, "matches": matches, "summary": summary}
+
+
+# ======== Page: Overview ========
+def page_overview(data):
+    players, summary = data["players"], data["summary"]
+
+    # Stat cards
     cols = st.columns(4)
     cols[0].metric("🏐 球員人數", f"{len(players)} 人")
     if "身高(cm)" in players.columns:
@@ -111,8 +115,6 @@ def page_overview(data, team_filter):
         cols[3].metric("👑 得分王", f"{top.get(name_col, '?')}", f"{int(top['得分'])} 分")
 
     st.divider()
-
-    # 兩欄圖表
     col1, col2 = st.columns(2)
 
     with col1:
@@ -121,12 +123,10 @@ def page_overview(data, team_filter):
             name_col = "球員姓名" if "球員姓名" in summary.columns else "姓名"
             top10 = summary.nlargest(10, "得分").copy()
             top10["label"] = top10.apply(lambda r: f"#{int(r.get('球員背號', 0))} {r[name_col]}", axis=1)
-            team_col = top10["球隊"] if "球隊" in top10.columns else "全隊"
             fig = px.bar(top10, y="label", x="得分", orientation="h",
-                         color="球隊" if "球隊" in top10.columns else None,
-                         color_discrete_map=TEAM_COLORS)
+                         color="球隊", color_discrete_map=TEAM_COLORS)
             fig.update_layout(yaxis=dict(autorange="reversed"), height=400,
-                              margin=dict(l=0, r=20, t=10, b=0), showlegend=True)
+                              margin=dict(l=0, r=20, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -139,78 +139,66 @@ def page_overview(data, team_filter):
             fig.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-    # 身高 vs 體重
+    # Scatter - simplified: color by position only, symbol by team
     st.subheader("身高 vs 體重分佈")
     if "身高(cm)" in players.columns and "體重(kg)" in players.columns:
         fig = px.scatter(players, x="身高(cm)", y="體重(kg)",
                          color="位置" if "位置" in players.columns else None,
                          color_discrete_map=POS_COLORS,
-                         symbol="球隊" if "球隊" in players.columns and team_filter == "全聯盟" else None,
-                         hover_data=["姓名", "背號", "球隊"] if "球隊" in players.columns else ["姓名", "背號"],
-                         size_max=15)
-        fig.update_traces(marker=dict(size=12, line=dict(width=1, color="white")))
+                         hover_data=["姓名", "背號", "球隊"],
+                         text="姓名" if len(players) <= 30 else None)
+        fig.update_traces(marker=dict(size=12, line=dict(width=1, color="white")),
+                          textposition="top center", textfont=dict(size=9))
         fig.update_layout(height=450, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
 
-# ======== 頁面：球員分析 ========
-def page_player(data, team_filter):
-    players = data["players"]
-    summary = data["summary"]
-
-    if team_filter != "全聯盟":
-        players = players[players["球隊"] == team_filter]
-
+# ======== Page: Player Analysis ========
+def page_player(data):
+    players, summary = data["players"], data["summary"]
     if players.empty:
-        st.warning("此隊伍沒有球員資料")
+        st.warning("此篩選條件下沒有球員")
         return
 
-    # 球員選擇
     player_options = {f"#{int(r['背號'])} {r['姓名']} ({r.get('球隊','')})": idx
                       for idx, r in players.iterrows()}
     selected_label = st.selectbox("選擇球員", list(player_options.keys()))
     p = players.loc[player_options[selected_label]]
+    team_color = TEAM_COLORS.get(p.get("球隊", ""), "#4A90D9")
 
-    # 球員資訊卡
     col1, col2 = st.columns([2, 3])
 
     with col1:
-        team_color = TEAM_COLORS.get(p.get("球隊", ""), "#1B3A6B")
+        # Player card
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, {team_color}22, {team_color}44);
                     border: 2px solid {team_color}; border-radius: 16px;
                     padding: 24px; text-align: center;">
             <div style="font-size: 48px; font-weight: 900; color: {team_color};">#{int(p.get('背號', 0))}</div>
             <div style="font-size: 28px; font-weight: 800; margin: 4px 0;">{p['姓名']}</div>
-            <div style="font-size: 14px; color: #666; margin-bottom: 12px;">
+            <div style="font-size: 14px; color: #999; margin-bottom: 12px;">
                 {p.get('球隊', '')} · {p.get('位置', '')}
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
-        # 身體數值
         body_cols = st.columns(2)
-        for i, (label, key) in enumerate([
-            ("身高", "身高(cm)"), ("體重", "體重(kg)"),
-            ("攻擊高度", "攻擊高度(cm)"), ("攔網高度", "攔網高度(cm)"),
-        ]):
-            val = p.get(key, "-")
-            if pd.notna(val) and val != "-":
-                body_cols[i % 2].metric(label, f"{int(val)} cm" if "高" in label else f"{int(val)} {'cm' if 'cm' in key else 'kg'}")
-
+        for i, (label, key) in enumerate([("身高", "身高(cm)"), ("體重", "體重(kg)"),
+                                           ("攻擊高度", "攻擊高度(cm)"), ("攔網高度", "攔網高度(cm)")]):
+            val = p.get(key, None)
+            if pd.notna(val):
+                unit = "cm" if "cm" in str(key) else "kg"
+                body_cols[i % 2].metric(label, f"{int(val)} {unit}")
         if pd.notna(p.get("MBTI")):
             st.metric("MBTI", p["MBTI"])
 
     with col2:
-        # 雷達圖
+        # Radar chart - FIXED: brighter colors, thicker lines
         pid = p.get("player_id", p.name)
         player_summary = summary[summary["player_id"] == pid] if "player_id" in summary.columns else pd.DataFrame()
 
         if not player_summary.empty:
             ps = player_summary.iloc[0]
-            labels = []
-            values = []
-            avg_values = []
+            labels, values, avg_values = [], [], []
             for col in STAT_COLUMNS:
                 pct = f"{col}%"
                 if pct in ps.index and pd.notna(ps[pct]):
@@ -220,26 +208,33 @@ def page_player(data, team_filter):
 
             if len(labels) >= 3:
                 fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(r=values + [values[0]], theta=labels + [labels[0]],
+                fig.add_trace(go.Scatterpolar(
+                    r=values + [values[0]], theta=labels + [labels[0]],
                     fill="toself", name=p["姓名"],
-                    line=dict(color=team_color, width=2), fillcolor=_hex_to_rgba(team_color)))
-                fig.add_trace(go.Scatterpolar(r=avg_values + [avg_values[0]], theta=labels + [labels[0]],
-                    name="全聯盟平均", line=dict(color="gray", dash="dash", width=1.5)))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True)),
-                                  height=400, margin=dict(l=60, r=60, t=40, b=40),
-                                  legend=dict(x=0.85, y=1.1))
+                    line=dict(color=team_color, width=3),
+                    fillcolor=_hex_to_rgba(team_color, 0.3),
+                    marker=dict(size=6)))
+                fig.add_trace(go.Scatterpolar(
+                    r=avg_values + [avg_values[0]], theta=labels + [labels[0]],
+                    name="全聯盟平均",
+                    line=dict(color="#AAAAAA", dash="dash", width=2),
+                    marker=dict(size=4)))
+                fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(visible=True, gridcolor="rgba(150,150,150,0.3)"),
+                        angularaxis=dict(gridcolor="rgba(150,150,150,0.3)")),
+                    height=420, margin=dict(l=60, r=60, t=40, b=40),
+                    legend=dict(x=0.8, y=1.1), font=dict(size=13))
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("此球員尚無賽季彙總數據")
 
 
-# ======== 頁面：球員比較 ========
-def page_compare(data, team_filter):
-    players = data["players"]
-    summary = data["summary"]
-
+# ======== Page: Player Compare ========
+def page_compare(data):
+    players, summary = data["players"], data["summary"]
     if players.empty or summary.empty:
-        st.warning("資料不足，無法比較")
+        st.warning("資料不足")
         return
 
     col1, col2 = st.columns(2)
@@ -250,21 +245,18 @@ def page_compare(data, team_filter):
     with col1:
         label_a = st.selectbox("球員 A", opts_list, index=0)
     with col2:
-        default_b = min(1, len(opts_list) - 1)
-        label_b = st.selectbox("球員 B", opts_list, index=default_b)
+        label_b = st.selectbox("球員 B", opts_list, index=min(1, len(opts_list) - 1))
 
     pid_a, pid_b = player_opts[label_a], player_opts[label_b]
-
     sa = summary[summary["player_id"] == pid_a]
     sb = summary[summary["player_id"] == pid_b]
-
     if sa.empty or sb.empty:
         st.warning("所選球員缺少數據")
         return
 
     sa, sb = sa.iloc[0], sb.iloc[0]
-    pa = players[players["player_id"] == pid_a].iloc[0] if "player_id" in players.columns else players.iloc[0]
-    pb = players[players["player_id"] == pid_b].iloc[0] if "player_id" in players.columns else players.iloc[1]
+    pa = players[players["player_id"] == pid_a].iloc[0]
+    pb = players[players["player_id"] == pid_b].iloc[0]
 
     col_radar, col_table = st.columns([1, 1])
 
@@ -273,23 +265,32 @@ def page_compare(data, team_filter):
         labels, vals_a, vals_b = [], [], []
         for col in STAT_COLUMNS:
             pct = f"{col}%"
-            if pct in sa.index and pd.notna(sa[pct]) and pct in sb.index and pd.notna(sb[pct]):
+            va = sa.get(pct, None)
+            vb = sb.get(pct, None)
+            if pd.notna(va) and pd.notna(vb):
                 labels.append(col)
-                vals_a.append(float(sa[pct]))
-                vals_b.append(float(sb[pct]))
+                vals_a.append(float(va))
+                vals_b.append(float(vb))
 
         if len(labels) >= 3:
+            color_a = TEAM_COLORS.get(pa.get("球隊", ""), "#4A90D9")
+            color_b = TEAM_COLORS.get(pb.get("球隊", ""), "#E65100")
             fig = go.Figure()
-            color_a = TEAM_COLORS.get(pa.get("球隊", ""), "#1B3A6B")
-            color_b = TEAM_COLORS.get(pb.get("球隊", ""), "#D4213D")
-            fig.add_trace(go.Scatterpolar(r=vals_a + [vals_a[0]], theta=labels + [labels[0]],
+            fig.add_trace(go.Scatterpolar(
+                r=vals_a + [vals_a[0]], theta=labels + [labels[0]],
                 fill="toself", name=pa["姓名"],
-                line=dict(color=color_a, width=2), fillcolor=_hex_to_rgba(color_a)))
-            fig.add_trace(go.Scatterpolar(r=vals_b + [vals_b[0]], theta=labels + [labels[0]],
+                line=dict(color=color_a, width=3),
+                fillcolor=_hex_to_rgba(color_a, 0.25), marker=dict(size=6)))
+            fig.add_trace(go.Scatterpolar(
+                r=vals_b + [vals_b[0]], theta=labels + [labels[0]],
                 fill="toself", name=pb["姓名"],
-                line=dict(color=color_b, width=2), fillcolor=_hex_to_rgba(color_b)))
-            fig.update_layout(polar=dict(radialaxis=dict(visible=True)),
-                              height=420, margin=dict(l=60, r=60, t=40, b=40))
+                line=dict(color=color_b, width=3),
+                fillcolor=_hex_to_rgba(color_b, 0.2), marker=dict(size=6)))
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, gridcolor="rgba(150,150,150,0.3)"),
+                    angularaxis=dict(gridcolor="rgba(150,150,150,0.3)")),
+                height=420, margin=dict(l=60, r=60, t=40, b=40), font=dict(size=13))
             st.plotly_chart(fig, use_container_width=True)
 
     with col_table:
@@ -297,63 +298,177 @@ def page_compare(data, team_filter):
         rows = []
         for col in STAT_COLUMNS:
             pct = f"{col}%"
-            if pct in sa.index:
-                va, vb = sa.get(pct, 0), sb.get(pct, 0)
-                rows.append({"指標": f"{col}效率", pa["姓名"]: f"{va:.1f}%", pb["姓名"]: f"{vb:.1f}%",
-                             "勝出": pa["姓名"] if va > vb else (pb["姓名"] if vb > va else "平手")})
+            va = sa.get(pct, None)
+            vb = sb.get(pct, None)
+            # FIXED: handle NaN - show "-" instead of "nan%"
+            va_str = f"{va:.1f}%" if pd.notna(va) else "-"
+            vb_str = f"{vb:.1f}%" if pd.notna(vb) else "-"
+            if pd.notna(va) and pd.notna(vb):
+                winner = pa["姓名"] if va > vb else (pb["姓名"] if vb > va else "平手")
+            else:
+                winner = "-"
+            rows.append({"指標": f"{col}效率", pa["姓名"]: va_str, pb["姓名"]: vb_str, "勝出": winner})
+
         if "得分" in sa.index:
-            va, vb = int(sa.get("得分", 0)), int(sb.get("得分", 0))
+            va, vb = sa.get("得分", 0), sb.get("得分", 0)
+            va = int(va) if pd.notna(va) else 0
+            vb = int(vb) if pd.notna(vb) else 0
             rows.append({"指標": "總得分", pa["姓名"]: str(va), pb["姓名"]: str(vb),
                          "勝出": pa["姓名"] if va > vb else (pb["姓名"] if vb > va else "平手")})
 
         if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=420)
 
 
-# ======== 頁面：比賽趨勢 ========
-def page_trends(data, team_filter):
+# ======== Page: Match Trends ========
+def page_trends(data):
     matches = data["matches"]
-
     if matches.empty:
         st.warning("無比賽數據")
         return
 
-    if team_filter != "全聯盟" and "球隊" in matches.columns:
-        matches = matches[matches["球隊"] == team_filter]
+    # Season filter if available
+    if "季" in matches.columns:
+        seasons = ["全部賽季"] + sorted(matches["季"].dropna().unique().tolist(), reverse=True)
+        selected_season = st.selectbox("選擇賽季", seasons)
+        if selected_season != "全部賽季":
+            matches = matches[matches["季"] == selected_season]
 
-    # 月度趨勢
+    # Match type filter
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        if "賽事類型" in matches.columns:
+            match_type = st.radio("賽事類型", ["全部", "例行賽", "季後賽"], horizontal=True)
+            if match_type != "全部":
+                matches = matches[matches["賽事類型"] == match_type]
+
     st.subheader("全隊技術指標月度趨勢")
     if "比賽日期" in matches.columns:
-        matches = matches.copy()
-        matches["年月"] = matches["比賽日期"].dt.to_period("M").dt.to_timestamp()
-        pct_cols = [f"{c}%" for c in STAT_COLUMNS if f"{c}%" in matches.columns]
-        monthly = matches.groupby("年月")[pct_cols].mean().reset_index()
-
+        m = matches.copy()
+        m["年月"] = m["比賽日期"].dt.to_period("M").dt.to_timestamp()
+        pct_cols = [f"{c}%" for c in STAT_COLUMNS if f"{c}%" in m.columns]
+        monthly = m.groupby("年月")[pct_cols].mean().reset_index()
         if not monthly.empty:
             fig = px.line(monthly.melt(id_vars="年月", var_name="指標", value_name="效率%"),
                           x="年月", y="效率%", color="指標", markers=True)
+            fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
             fig.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-    # 對手比較
     st.subheader("對不同對手的表現")
     if "對手" in matches.columns:
-        pct_cols = [f"{c}%" for c in ["攻擊", "防守", "接發球"] if f"{c}%" in matches.columns]
+        # Exclude playoff-tagged opponents for cleaner comparison
+        opp_matches = matches[~matches["對手"].str.contains("|".join(PLAYOFF_TAGS), na=False)] if "賽事類型" not in matches.columns else matches
+        pct_cols = [f"{c}%" for c in ["攻擊", "防守", "接發球"] if f"{c}%" in opp_matches.columns]
         if pct_cols:
-            opp_stats = matches.groupby("對手")[pct_cols].mean().reset_index()
-            fig = px.bar(opp_stats.melt(id_vars="對手", var_name="指標", value_name="效率%"),
-                         x="對手", y="效率%", color="指標", barmode="group")
+            opp_stats = opp_matches.groupby("對手")[pct_cols].mean().reset_index()
+            # Sort by number of matches
+            opp_count = opp_matches.groupby("對手").size().reset_index(name="場次")
+            opp_stats = opp_stats.merge(opp_count, on="對手")
+            opp_stats.sort_values("場次", ascending=False, inplace=True)
+
+            fig = px.bar(opp_stats.melt(id_vars=["對手", "場次"], var_name="指標", value_name="效率%"),
+                         x="對手", y="效率%", color="指標", barmode="group",
+                         color_discrete_sequence=["#457B9D", "#2A9D8F", "#E63946"],
+                         hover_data=["場次"])
             fig.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
 
-# ======== 頁面：跨隊比較 ========
+# ======== Page: ML Insights ========
+def page_ml_insights(data):
+    st.subheader("🏅 MVP 綜合評分排行")
+    mvp_path = PROCESSED_DIR / "mvp_rankings.csv"
+    if mvp_path.exists():
+        mvp = pd.read_csv(mvp_path)
+        if not mvp.empty:
+            name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
+            top = mvp.nsmallest(15, "MVP_rank").copy()
+            top["label"] = top.apply(lambda r: f"#{int(r.get('球員背號', 0))} {r[name_col]}", axis=1)
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                fig = px.bar(top, y="label", x="MVP_score", orientation="h",
+                             color="球隊" if "球隊" in top.columns else None,
+                             color_discrete_map=TEAM_COLORS)
+                fig.update_layout(yaxis=dict(autorange="reversed"), height=450,
+                                  margin=dict(l=0, r=20, t=10, b=0), xaxis_title="MVP Score (0-100)")
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.markdown("""**MVP 評分公式**
+
+各項指標經 Z-score 標準化後加權：
+- 攻擊效率：25%
+- 攔網效率：15%
+- 發球效率：15%
+- 接發球效率：15%
+- 防守效率：15%
+- 總得分：10%
+- 舉球效率：5%""")
+    else:
+        st.info("請先執行 `python main.py --steps ml`")
+
+    st.divider()
+
+    st.subheader("🔍 異常表現偵測")
+    anomaly_path = PROCESSED_DIR / "anomalies.csv"
+    if anomaly_path.exists():
+        anomalies = pd.read_csv(anomaly_path, parse_dates=["比賽日期"])
+        if not anomalies.empty:
+            name_col = "球員姓名" if "球員姓名" in anomalies.columns else "姓名"
+            col_exc, col_und = st.columns(2)
+            with col_exc:
+                st.markdown("#### ⭐ 超常發揮")
+                exc = anomalies[anomalies["anomaly_type"] == "exceptional"].nlargest(10, "max_z")
+                if not exc.empty:
+                    d = exc[[name_col, "球隊", "對手", "比賽日期", "max_z"]].copy() if "球隊" in exc.columns else exc[[name_col, "對手", "比賽日期", "max_z"]].copy()
+                    d.columns = [*d.columns[:-1], "z-score"]
+                    d["z-score"] = d["z-score"].round(2)
+                    st.dataframe(d, hide_index=True, use_container_width=True)
+            with col_und:
+                st.markdown("#### ⚠️ 低於水準")
+                und = anomalies[anomalies["anomaly_type"] == "underperform"].nlargest(10, "max_z")
+                if not und.empty:
+                    d = und[[name_col, "球隊", "對手", "比賽日期", "max_z"]].copy() if "球隊" in und.columns else und[[name_col, "對手", "比賽日期", "max_z"]].copy()
+                    d.columns = [*d.columns[:-1], "z-score"]
+                    d["z-score"] = d["z-score"].round(2)
+                    st.dataframe(d, hide_index=True, use_container_width=True)
+
+            if "max_z" in anomalies.columns:
+                st.markdown("#### 異常表現時間分佈")
+                anomalies["label"] = anomalies.apply(lambda r: f"{r.get(name_col, '?')} vs {r.get('對手', '?')}", axis=1)
+                fig = px.scatter(anomalies, x="比賽日期", y="max_z",
+                                 color="anomaly_type",
+                                 color_discrete_map={"exceptional": "#2ECC71", "underperform": "#E74C3C"},
+                                 hover_data=["label"], size="max_z", size_max=15)
+                fig.add_hline(y=2.0, line_dash="dash", line_color="gray", annotation_text="z=2.0")
+                fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0), yaxis_title="|z-score|")
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("請先執行 `python main.py --steps ml`")
+
+    st.divider()
+    st.subheader("🤖 預測模型")
+    model_files = {"得分預測": "score_predictor.joblib", "攻擊效率": "attack_predictor.joblib", "防守效率": "defense_predictor.joblib"}
+    cols = st.columns(len(model_files))
+    for i, (label, fn) in enumerate(model_files.items()):
+        path = MODELS_DIR / fn
+        with cols[i]:
+            if path.exists():
+                import joblib
+                bundle = joblib.load(path)
+                st.metric(label, bundle.get("model_name", type(bundle["model"]).__name__))
+                st.caption(f"{len(bundle['feature_cols'])} features")
+            else:
+                st.metric(label, "未訓練")
+
+
+# ======== Page: Cross-team Compare ========
 def page_cross_team(data):
-    players = data["players"]
-    summary = data["summary"]
+    players, summary = data["players"], data["summary"]
 
     if "球隊" not in players.columns:
-        st.warning("資料中缺少球隊欄位")
+        st.warning("缺少球隊欄位")
         return
 
     st.subheader("各隊平均身體素質")
@@ -384,135 +499,11 @@ def page_cross_team(data):
             top["label"] = top.apply(lambda r: f"#{int(r.get('球員背號', 0))} {r[name_col]}", axis=1)
             fig = px.bar(top, y="label", x="得分", orientation="h",
                          color="球隊", color_discrete_map=TEAM_COLORS)
-            fig.update_layout(yaxis=dict(autorange="reversed"), height=500,
-                              margin=dict(l=0, r=20, t=10, b=0))
+            fig.update_layout(yaxis=dict(autorange="reversed"), height=500, margin=dict(l=0, r=20, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
 
-# ======== Page: ML Insights ========
-def page_ml_insights(data, team_filter):
-    matches = data["matches"]
-
-    # --- MVP Rankings ---
-    st.subheader("🏅 MVP 綜合評分排行")
-    mvp_path = PROCESSED_DIR / "mvp_rankings.csv"
-    if mvp_path.exists():
-        mvp = pd.read_csv(mvp_path)
-        if team_filter != "全聯盟" and "球隊" in mvp.columns:
-            mvp = mvp[mvp["球隊"] == team_filter]
-
-        if not mvp.empty:
-            name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
-            top = mvp.nsmallest(15, "MVP_rank").copy()
-            top["label"] = top.apply(lambda r: f"#{int(r.get('球員背號', 0))} {r[name_col]}", axis=1)
-
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                fig = px.bar(top, y="label", x="MVP_score", orientation="h",
-                             color="球隊" if "球隊" in top.columns else None,
-                             color_discrete_map=TEAM_COLORS)
-                fig.update_layout(yaxis=dict(autorange="reversed"), height=450,
-                                  margin=dict(l=0, r=20, t=10, b=0),
-                                  xaxis_title="MVP Score (0-100)")
-                st.plotly_chart(fig, use_container_width=True)
-            with col2:
-                st.markdown("**MVP 評分公式**")
-                st.markdown("""
-                各項指標經 Z-score 標準化後加權計算：
-                - 攻擊效率：25%
-                - 攔網效率：15%
-                - 發球效率：15%
-                - 接發球效率：15%
-                - 防守效率：15%
-                - 總得分：10%
-                - 舉球效率：5%
-                """)
-    else:
-        st.info("尚無 MVP 數據，請先執行：`python main.py --steps ml`")
-
-    st.divider()
-
-    # --- Anomaly Detection ---
-    st.subheader("🔍 異常表現偵測")
-    anomaly_path = PROCESSED_DIR / "anomalies.csv"
-    if anomaly_path.exists():
-        anomalies = pd.read_csv(anomaly_path, parse_dates=["比賽日期"])
-        if team_filter != "全聯盟" and "球隊" in anomalies.columns:
-            anomalies = anomalies[anomalies["球隊"] == team_filter]
-
-        if not anomalies.empty:
-            name_col = "球員姓名" if "球員姓名" in anomalies.columns else "姓名"
-
-            col_exc, col_und = st.columns(2)
-
-            with col_exc:
-                st.markdown("#### ⭐ 超常發揮")
-                exc = anomalies[anomalies["anomaly_type"] == "exceptional"].nlargest(10, "max_z")
-                if not exc.empty:
-                    display = exc[[name_col, "對手", "比賽日期", "max_z"]].copy()
-                    display.columns = ["球員", "對手", "日期", "異常程度 (z)"]
-                    display["異常程度 (z)"] = display["異常程度 (z)"].round(2)
-                    if "球隊" in exc.columns:
-                        display.insert(1, "球隊", exc["球隊"].values)
-                    st.dataframe(display, hide_index=True, use_container_width=True)
-                else:
-                    st.caption("無超常發揮紀錄")
-
-            with col_und:
-                st.markdown("#### ⚠️ 低於水準")
-                und = anomalies[anomalies["anomaly_type"] == "underperform"].nlargest(10, "max_z")
-                if not und.empty:
-                    display = und[[name_col, "對手", "比賽日期", "max_z"]].copy()
-                    display.columns = ["球員", "對手", "日期", "異常程度 (z)"]
-                    display["異常程度 (z)"] = display["異常程度 (z)"].round(2)
-                    if "球隊" in und.columns:
-                        display.insert(1, "球隊", und["球隊"].values)
-                    st.dataframe(display, hide_index=True, use_container_width=True)
-                else:
-                    st.caption("無低於水準紀錄")
-
-            # Anomaly scatter
-            st.markdown("#### 異常表現分佈")
-            if "得分" in anomalies.columns and "max_z" in anomalies.columns:
-                anomalies["label"] = anomalies.apply(
-                    lambda r: f"{r.get(name_col, '?')} vs {r.get('對手', '?')}", axis=1)
-                fig = px.scatter(anomalies, x="比賽日期", y="max_z",
-                                 color="anomaly_type",
-                                 color_discrete_map={"exceptional": "#2ECC71", "underperform": "#E74C3C"},
-                                 hover_data=["label", "得分"],
-                                 size="max_z", size_max=15)
-                fig.add_hline(y=2.0, line_dash="dash", line_color="gray",
-                              annotation_text="z=2.0 threshold")
-                fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0),
-                                  yaxis_title="異常程度 (|z-score|)")
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("尚無異常偵測數據，請先執行：`python main.py --steps ml`")
-
-    st.divider()
-
-    # --- Model Performance ---
-    st.subheader("🤖 預測模型資訊")
-    model_files = {
-        "得分預測": "score_predictor.joblib",
-        "攻擊效率預測": "attack_predictor.joblib",
-        "防守效率預測": "defense_predictor.joblib",
-    }
-
-    cols = st.columns(len(model_files))
-    for i, (label, filename) in enumerate(model_files.items()):
-        path = MODELS_DIR / filename
-        with cols[i]:
-            if path.exists():
-                bundle = __import__("joblib").load(path)
-                model_name = bundle.get("model_name", type(bundle["model"]).__name__)
-                st.metric(label, model_name)
-                st.caption(f"Features: {len(bundle['feature_cols'])}")
-            else:
-                st.metric(label, "未訓練")
-
-
-# ======== 主程式 ========
+# ======== Main ========
 def main():
     inject_css()
 
@@ -529,37 +520,35 @@ def main():
         st.sidebar.markdown(f'<div style="width:100%;height:4px;background:{color};border-radius:2px;margin:8px 0;"></div>',
                             unsafe_allow_html=True)
 
-    st.sidebar.divider()
-    st.sidebar.markdown("📊 資料來源：[TVL 官網](https://tvl.ctvba.org.tw/)")
-    st.sidebar.markdown("🔄 重新爬取：`python main.py`")
+    # Position filter (NEW)
+    pos_options = ["全部位置"] + list(POS_COLORS.keys())
+    pos_filter = st.sidebar.selectbox("🏃 篩選位置", pos_options)
 
-    # 載入資料
-    data = load_data()
-    if data is None:
-        st.error("⚠️ 找不到資料！請先執行爬蟲與清洗：")
-        st.code("python main.py --steps scrape clean", language="bash")
+    st.sidebar.divider()
+    st.sidebar.markdown("📊 [TVL 官網](https://tvl.ctvba.org.tw/)")
+    st.sidebar.markdown("🔄 `python main.py`")
+
+    # Load & filter
+    raw_data = load_data()
+    if raw_data is None:
+        st.error("⚠️ 找不到資料！請先執行：`python main.py --steps scrape clean`")
         return
 
-    # 頁籤
+    data = apply_filters(raw_data, team_filter, pos_filter)
+
+    # Tabs
     tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢", "🤖 ML 洞察"]
-    if team_filter == "全聯盟":
+    if team_filter == "全聯盟" and pos_filter == "全部位置":
         tab_names.append("🏆 跨隊比較")
 
     tabs = st.tabs(tab_names)
-
-    with tabs[0]:
-        page_overview(data, team_filter)
-    with tabs[1]:
-        page_player(data, team_filter)
-    with tabs[2]:
-        page_compare(data, team_filter)
-    with tabs[3]:
-        page_trends(data, team_filter)
-    with tabs[4]:
-        page_ml_insights(data, team_filter)
-    if team_filter == "全聯盟" and len(tabs) > 5:
-        with tabs[5]:
-            page_cross_team(data)
+    with tabs[0]: page_overview(data)
+    with tabs[1]: page_player(data)
+    with tabs[2]: page_compare(data)
+    with tabs[3]: page_trends(data)
+    with tabs[4]: page_ml_insights(data)
+    if len(tabs) > 5:
+        with tabs[5]: page_cross_team(raw_data)
 
 
 if __name__ == "__main__":

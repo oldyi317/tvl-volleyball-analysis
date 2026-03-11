@@ -1,7 +1,7 @@
 """資料清洗與前處理（防禦性處理缺失欄位）"""
 import json
 import pandas as pd
-from config.settings import RAW_DIR, PROCESSED_DIR, STAT_COLUMNS
+from config.settings import RAW_DIR, PROCESSED_DIR, STAT_COLUMNS, OPPONENT_NAME_MAP, PLAYOFF_TAGS
 from scraper.utils import parse_stat_pair, parse_pct
 
 
@@ -60,6 +60,19 @@ def clean_matches(df: pd.DataFrame) -> pd.DataFrame:
     if "比賽日期" in df.columns:
         df["比賽日期"] = pd.to_datetime(df["比賽日期"], errors="coerce")
 
+    # Normalize opponent names (historical → current)
+    if "對手" in df.columns:
+        # Direct mapping
+        df["對手"] = df["對手"].replace(OPPONENT_NAME_MAP)
+        # Handle playoff tags like "挑戰賽1", "挑戰賽2" → mark as playoff
+        df["賽事類型"] = "例行賽"
+        for tag in PLAYOFF_TAGS:
+            mask = df["對手"].str.contains(tag, na=False)
+            df.loc[mask, "賽事類型"] = "季後賽"
+            # Try to extract actual opponent from context (same date)
+            # For now, keep as-is but tag it
+        # Also strip trailing numbers from opponent (e.g. "挑戰賽1" stays but is tagged)
+
     for col in STAT_COLUMNS:
         if col in df.columns:
             parsed = df[col].apply(parse_stat_pair)
@@ -96,7 +109,7 @@ def build_player_stats_summary(matches_clean: pd.DataFrame) -> pd.DataFrame:
     if not agg:
         return pd.DataFrame()
 
-    group_cols = [c for c in ["player_id", "球員背號", "球員姓名"] if c in matches_clean.columns]
+    group_cols = [c for c in ["player_id", "球員背號", "球員姓名", "球隊"] if c in matches_clean.columns]
     if not group_cols:
         return pd.DataFrame()
 
