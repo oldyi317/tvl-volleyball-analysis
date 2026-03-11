@@ -109,7 +109,7 @@ def build_player_stats_summary(matches_clean: pd.DataFrame) -> pd.DataFrame:
     if not agg:
         return pd.DataFrame()
 
-    group_cols = [c for c in ["player_id", "球員背號", "球員姓名", "球隊"] if c in matches_clean.columns]
+    group_cols = [c for c in ["player_id", "球員背號", "球員姓名", "球隊", "季"] if c in matches_clean.columns]
     if not group_cols:
         return pd.DataFrame()
 

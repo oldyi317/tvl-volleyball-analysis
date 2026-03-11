@@ -77,11 +77,18 @@ def inject_css():
 
 
 # ======== Filters ========
-def apply_filters(data, team_filter, pos_filter):
-    """Apply team and position filters to all dataframes."""
+def apply_filters(data, team_filter, pos_filter, season_filter=None):
+    """Apply team, position, and season filters to all dataframes."""
     players = data["players"].copy()
     matches = data["matches"].copy()
     summary = data["summary"].copy()
+
+    # Season filter (applies to matches and summary)
+    if season_filter and season_filter != "全部賽季":
+        if "季" in matches.columns:
+            matches = matches[matches["季"] == season_filter]
+        if "季" in summary.columns:
+            summary = summary[summary["季"] == season_filter]
 
     if team_filter != "全聯盟":
         if "球隊" in players.columns: players = players[players["球隊"] == team_filter]
@@ -91,7 +98,6 @@ def apply_filters(data, team_filter, pos_filter):
     if pos_filter != "全部位置":
         if "位置" in players.columns: players = players[players["位置"] == pos_filter]
         if "位置" in summary.columns: summary = summary[summary["位置"] == pos_filter]
-        # For matches, filter by player_ids in filtered players
         if "player_id" in players.columns and "player_id" in matches.columns:
             matches = matches[matches["player_id"].isin(players["player_id"])]
 
@@ -327,20 +333,11 @@ def page_trends(data):
         st.warning("無比賽數據")
         return
 
-    # Season filter if available
-    if "季" in matches.columns:
-        seasons = ["全部賽季"] + sorted(matches["季"].dropna().unique().tolist(), reverse=True)
-        selected_season = st.selectbox("選擇賽季", seasons)
-        if selected_season != "全部賽季":
-            matches = matches[matches["季"] == selected_season]
-
     # Match type filter
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        if "賽事類型" in matches.columns:
-            match_type = st.radio("賽事類型", ["全部", "例行賽", "季後賽"], horizontal=True)
-            if match_type != "全部":
-                matches = matches[matches["賽事類型"] == match_type]
+    if "賽事類型" in matches.columns:
+        match_type = st.radio("賽事類型", ["全部", "例行賽", "季後賽"], horizontal=True)
+        if match_type != "全部":
+            matches = matches[matches["賽事類型"] == match_type]
 
     st.subheader("全隊技術指標月度趨勢")
     if "比賽日期" in matches.columns:
@@ -381,6 +378,12 @@ def page_ml_insights(data):
     mvp_path = PROCESSED_DIR / "mvp_rankings.csv"
     if mvp_path.exists():
         mvp = pd.read_csv(mvp_path)
+
+        # Filter by season if season column in sidebar-filtered data
+        if not data["summary"].empty and "季" in data["summary"].columns:
+            active_seasons = data["summary"]["季"].unique()
+            if "季" in mvp.columns:
+                mvp = mvp[mvp["季"].isin(active_seasons)]
         if not mvp.empty:
             name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
             top = mvp.nsmallest(15, "MVP_rank").copy()
@@ -414,6 +417,11 @@ def page_ml_insights(data):
     anomaly_path = PROCESSED_DIR / "anomalies.csv"
     if anomaly_path.exists():
         anomalies = pd.read_csv(anomaly_path, parse_dates=["比賽日期"])
+        # Filter by active seasons
+        if not data["summary"].empty and "季" in data["summary"].columns:
+            active_seasons = data["summary"]["季"].unique()
+            if "季" in anomalies.columns:
+                anomalies = anomalies[anomalies["季"].isin(active_seasons)]
         if not anomalies.empty:
             name_col = "球員姓名" if "球員姓名" in anomalies.columns else "姓名"
             col_exc, col_und = st.columns(2)
@@ -520,21 +528,33 @@ def main():
         st.sidebar.markdown(f'<div style="width:100%;height:4px;background:{color};border-radius:2px;margin:8px 0;"></div>',
                             unsafe_allow_html=True)
 
-    # Position filter (NEW)
+    # Position filter
     pos_options = ["全部位置"] + list(POS_COLORS.keys())
     pos_filter = st.sidebar.selectbox("🏃 篩選位置", pos_options)
 
-    st.sidebar.divider()
-    st.sidebar.markdown("📊 [TVL 官網](https://tvl.ctvba.org.tw/)")
-    st.sidebar.markdown("🔄 `python main.py`")
-
-    # Load & filter
+    # Season filter
     raw_data = load_data()
     if raw_data is None:
         st.error("⚠️ 找不到資料！請先執行：`python main.py --steps scrape clean`")
         return
 
-    data = apply_filters(raw_data, team_filter, pos_filter)
+    season_options = ["全部賽季"]
+    if "季" in raw_data["summary"].columns:
+        seasons = sorted(raw_data["summary"]["季"].dropna().unique().tolist(), reverse=True)
+        season_options += seasons
+    elif "季" in raw_data["matches"].columns:
+        seasons = sorted(raw_data["matches"]["季"].dropna().unique().tolist(), reverse=True)
+        season_options += seasons
+
+    # Default to latest season (index 1) if available
+    default_idx = 1 if len(season_options) > 1 else 0
+    season_filter = st.sidebar.selectbox("📅 選擇賽季", season_options, index=default_idx)
+
+    st.sidebar.divider()
+    st.sidebar.markdown("📊 [TVL 官網](https://tvl.ctvba.org.tw/)")
+    st.sidebar.markdown("🔄 `python main.py`")
+
+    data = apply_filters(raw_data, team_filter, pos_filter, season_filter)
 
     # Tabs
     tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢", "🤖 ML 洞察"]
@@ -548,7 +568,10 @@ def main():
     with tabs[3]: page_trends(data)
     with tabs[4]: page_ml_insights(data)
     if len(tabs) > 5:
-        with tabs[5]: page_cross_team(raw_data)
+        with tabs[5]:
+            # Cross-team uses all teams but respects season filter
+            cross_data = apply_filters(raw_data, "全聯盟", "全部位置", season_filter)
+            page_cross_team(cross_data)
 
 
 if __name__ == "__main__":

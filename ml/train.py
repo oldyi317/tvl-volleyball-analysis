@@ -162,28 +162,43 @@ def _train_performance_prediction():
 # ============================================================
 def _train_mvp_ranking():
     """
-    Compute MVP scores and save rankings.
-    Not a trained model, but a weighted composite scoring system.
+    Compute MVP scores per season, save all.
     """
     summary = pd.read_csv(PROCESSED_DIR / "player_stats_summary.csv")
     if summary.empty:
         print("  ⚠️  No summary data, skipping")
         return
 
-    mvp = compute_mvp_score(summary)
+    # Compute MVP per season if season column exists
+    if "季" in summary.columns:
+        all_mvp = []
+        for season in summary["季"].dropna().unique():
+            season_data = summary[summary["季"] == season].copy()
+            mvp = compute_mvp_score(season_data)
+            mvp["季"] = season
+            all_mvp.append(mvp)
+        mvp = pd.concat(all_mvp, ignore_index=True) if all_mvp else pd.DataFrame()
+    else:
+        mvp = compute_mvp_score(summary)
+
+    if mvp.empty:
+        print("  ⚠️  MVP computation produced no results")
+        return
 
     # Save
     out_path = PROCESSED_DIR / "mvp_rankings.csv"
-    name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
-    display_cols = ["MVP_rank", name_col, "球員背號", "MVP_score", "出賽場次"]
-    if "球隊" in mvp.columns:
-        display_cols.insert(2, "球隊")
-    display_cols = [c for c in display_cols if c in mvp.columns]
-
     mvp.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"  ✅ MVP Rankings saved")
 
-    top5 = mvp.head(5)
+    # Print latest season top 5
+    name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
+    if "季" in mvp.columns:
+        latest = mvp["季"].dropna().max()
+        top5 = mvp[mvp["季"] == latest].nsmallest(5, "MVP_rank")
+        print(f"     Latest season: {latest}")
+    else:
+        top5 = mvp.nsmallest(5, "MVP_rank")
+
     for _, row in top5.iterrows():
         print(f"     #{int(row.get('MVP_rank', 0))} "
               f"{row.get(name_col, '?')} "
