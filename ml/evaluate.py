@@ -1,18 +1,29 @@
-"""模型評估"""
+"""Model evaluation utilities."""
 import numpy as np
-from sklearn.metrics import silhouette_score, r2_score, mean_absolute_error
-
-
-def evaluate_clustering(X, labels) -> float:
-    """評估分群品質（Silhouette Score）"""
-    if len(set(labels)) < 2:
-        return -1.0
-    return silhouette_score(X, labels)
+from sklearn.metrics import r2_score, mean_absolute_error
+from sklearn.model_selection import cross_val_score
 
 
 def evaluate_regression(model, X, y) -> tuple[float, float]:
-    """評估迴歸模型：回傳 (R², MAE)"""
+    """Evaluate regression: returns (R2, MAE)."""
     y_pred = model.predict(X)
-    r2 = r2_score(y, y_pred)
-    mae = mean_absolute_error(y, y_pred)
-    return r2, mae
+    return r2_score(y, y_pred), mean_absolute_error(y, y_pred)
+
+
+def compare_models(models: dict, X, y, cv: int = 5) -> dict:
+    """
+    Compare multiple models using cross-validation.
+    Returns dict of {name: {r2_cv_mean, r2_cv_std, mae}}.
+    """
+    results = {}
+    for name, model in models.items():
+        scores = cross_val_score(model, X, y, cv=cv, scoring="r2")
+        model.fit(X, y)
+        y_pred = model.predict(X)
+        mae = mean_absolute_error(y, y_pred)
+        results[name] = {
+            "r2_cv_mean": scores.mean(),
+            "r2_cv_std": scores.std(),
+            "mae": mae,
+        }
+    return results

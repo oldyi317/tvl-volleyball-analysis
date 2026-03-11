@@ -51,8 +51,8 @@ def run_pipeline(steps: list[str], team: str = None):
 
     if "ml" in steps:
         print("\n🤖 [5/6] 機器學習建模...")
-        from ml.train import train_model
-        train_model()
+        from ml.train import train_all
+        train_all()
 
     if "dashboard" in steps:
         print("\n🖥️  [6/6] 啟動 Streamlit 儀表板...")

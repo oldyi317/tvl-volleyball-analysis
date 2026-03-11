@@ -1,32 +1,35 @@
-"""預測推論：載入已訓練模型進行預測"""
+"""Prediction utilities - load trained models and predict."""
 import joblib
 import pandas as pd
 from config.settings import MODELS_DIR
 
 
+def predict_score(match_features: pd.DataFrame) -> pd.Series:
+    """Predict single-game score."""
+    return _predict_with_model("score_predictor.joblib", match_features, "predicted_score")
+
+
+def predict_attack(match_features: pd.DataFrame) -> pd.Series:
+    """Predict attack efficiency %."""
+    return _predict_with_model("attack_predictor.joblib", match_features, "predicted_attack%")
+
+
 def predict_defense(match_features: pd.DataFrame) -> pd.Series:
-    """
-    預測防守效率
-    match_features: 需含訓練時使用的特徵欄位
-    回傳預測的防守效率 (%)
-    """
-    bundle = joblib.load(MODELS_DIR / "defense_predictor.joblib")
-    model = bundle["model"]
-    feature_cols = bundle["feature_cols"]
-
-    X = match_features[feature_cols].fillna(0)
-    return pd.Series(model.predict(X), index=match_features.index, name="predicted_defense%")
+    """Predict defense efficiency %."""
+    return _predict_with_model("defense_predictor.joblib", match_features, "predicted_defense%")
 
 
-def get_player_cluster(player_features: pd.DataFrame) -> pd.Series:
-    """
-    預測球員所屬分群
-    player_features: 需含分群時使用的特徵欄位
-    """
-    bundle = joblib.load(MODELS_DIR / "clustering.joblib")
+def _predict_with_model(model_file: str, features: pd.DataFrame, output_name: str) -> pd.Series:
+    """Generic prediction using a saved model."""
+    path = MODELS_DIR / model_file
+    if not path.exists():
+        raise FileNotFoundError(f"Model not found: {path}. Run training first.")
+
+    bundle = joblib.load(path)
     model = bundle["model"]
     scaler = bundle["scaler"]
     feature_cols = bundle["feature_cols"]
 
-    X = scaler.transform(player_features[feature_cols].fillna(0))
-    return pd.Series(model.predict(X), name="cluster")
+    X = features[feature_cols].fillna(0)
+    X_scaled = scaler.transform(X)
+    return pd.Series(model.predict(X_scaled), index=features.index, name=output_name)

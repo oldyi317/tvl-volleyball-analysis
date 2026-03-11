@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from config.settings import PROCESSED_DIR, WOMEN_TEAMS, STAT_COLUMNS, SEASON
+from config.settings import PROCESSED_DIR, MODELS_DIR, WOMEN_TEAMS, STAT_COLUMNS, SEASON
 
 # ======== 頁面設定 ========
 st.set_page_config(
@@ -389,6 +389,129 @@ def page_cross_team(data):
             st.plotly_chart(fig, use_container_width=True)
 
 
+# ======== Page: ML Insights ========
+def page_ml_insights(data, team_filter):
+    matches = data["matches"]
+
+    # --- MVP Rankings ---
+    st.subheader("🏅 MVP 綜合評分排行")
+    mvp_path = PROCESSED_DIR / "mvp_rankings.csv"
+    if mvp_path.exists():
+        mvp = pd.read_csv(mvp_path)
+        if team_filter != "全聯盟" and "球隊" in mvp.columns:
+            mvp = mvp[mvp["球隊"] == team_filter]
+
+        if not mvp.empty:
+            name_col = "球員姓名" if "球員姓名" in mvp.columns else "姓名"
+            top = mvp.nsmallest(15, "MVP_rank").copy()
+            top["label"] = top.apply(lambda r: f"#{int(r.get('球員背號', 0))} {r[name_col]}", axis=1)
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                fig = px.bar(top, y="label", x="MVP_score", orientation="h",
+                             color="球隊" if "球隊" in top.columns else None,
+                             color_discrete_map=TEAM_COLORS)
+                fig.update_layout(yaxis=dict(autorange="reversed"), height=450,
+                                  margin=dict(l=0, r=20, t=10, b=0),
+                                  xaxis_title="MVP Score (0-100)")
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.markdown("**MVP 評分公式**")
+                st.markdown("""
+                各項指標經 Z-score 標準化後加權計算：
+                - 攻擊效率：25%
+                - 攔網效率：15%
+                - 發球效率：15%
+                - 接發球效率：15%
+                - 防守效率：15%
+                - 總得分：10%
+                - 舉球效率：5%
+                """)
+    else:
+        st.info("尚無 MVP 數據，請先執行：`python main.py --steps ml`")
+
+    st.divider()
+
+    # --- Anomaly Detection ---
+    st.subheader("🔍 異常表現偵測")
+    anomaly_path = PROCESSED_DIR / "anomalies.csv"
+    if anomaly_path.exists():
+        anomalies = pd.read_csv(anomaly_path, parse_dates=["比賽日期"])
+        if team_filter != "全聯盟" and "球隊" in anomalies.columns:
+            anomalies = anomalies[anomalies["球隊"] == team_filter]
+
+        if not anomalies.empty:
+            name_col = "球員姓名" if "球員姓名" in anomalies.columns else "姓名"
+
+            col_exc, col_und = st.columns(2)
+
+            with col_exc:
+                st.markdown("#### ⭐ 超常發揮")
+                exc = anomalies[anomalies["anomaly_type"] == "exceptional"].nlargest(10, "max_z")
+                if not exc.empty:
+                    display = exc[[name_col, "對手", "比賽日期", "max_z"]].copy()
+                    display.columns = ["球員", "對手", "日期", "異常程度 (z)"]
+                    display["異常程度 (z)"] = display["異常程度 (z)"].round(2)
+                    if "球隊" in exc.columns:
+                        display.insert(1, "球隊", exc["球隊"].values)
+                    st.dataframe(display, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("無超常發揮紀錄")
+
+            with col_und:
+                st.markdown("#### ⚠️ 低於水準")
+                und = anomalies[anomalies["anomaly_type"] == "underperform"].nlargest(10, "max_z")
+                if not und.empty:
+                    display = und[[name_col, "對手", "比賽日期", "max_z"]].copy()
+                    display.columns = ["球員", "對手", "日期", "異常程度 (z)"]
+                    display["異常程度 (z)"] = display["異常程度 (z)"].round(2)
+                    if "球隊" in und.columns:
+                        display.insert(1, "球隊", und["球隊"].values)
+                    st.dataframe(display, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("無低於水準紀錄")
+
+            # Anomaly scatter
+            st.markdown("#### 異常表現分佈")
+            if "得分" in anomalies.columns and "max_z" in anomalies.columns:
+                anomalies["label"] = anomalies.apply(
+                    lambda r: f"{r.get(name_col, '?')} vs {r.get('對手', '?')}", axis=1)
+                fig = px.scatter(anomalies, x="比賽日期", y="max_z",
+                                 color="anomaly_type",
+                                 color_discrete_map={"exceptional": "#2ECC71", "underperform": "#E74C3C"},
+                                 hover_data=["label", "得分"],
+                                 size="max_z", size_max=15)
+                fig.add_hline(y=2.0, line_dash="dash", line_color="gray",
+                              annotation_text="z=2.0 threshold")
+                fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0),
+                                  yaxis_title="異常程度 (|z-score|)")
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("尚無異常偵測數據，請先執行：`python main.py --steps ml`")
+
+    st.divider()
+
+    # --- Model Performance ---
+    st.subheader("🤖 預測模型資訊")
+    model_files = {
+        "得分預測": "score_predictor.joblib",
+        "攻擊效率預測": "attack_predictor.joblib",
+        "防守效率預測": "defense_predictor.joblib",
+    }
+
+    cols = st.columns(len(model_files))
+    for i, (label, filename) in enumerate(model_files.items()):
+        path = MODELS_DIR / filename
+        with cols[i]:
+            if path.exists():
+                bundle = __import__("joblib").load(path)
+                model_name = bundle.get("model_name", type(bundle["model"]).__name__)
+                st.metric(label, model_name)
+                st.caption(f"Features: {len(bundle['feature_cols'])}")
+            else:
+                st.metric(label, "未訓練")
+
+
 # ======== 主程式 ========
 def main():
     inject_css()
@@ -418,7 +541,7 @@ def main():
         return
 
     # 頁籤
-    tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢"]
+    tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢", "🤖 ML 洞察"]
     if team_filter == "全聯盟":
         tab_names.append("🏆 跨隊比較")
 
@@ -432,8 +555,10 @@ def main():
         page_compare(data, team_filter)
     with tabs[3]:
         page_trends(data, team_filter)
-    if team_filter == "全聯盟" and len(tabs) > 4:
-        with tabs[4]:
+    with tabs[4]:
+        page_ml_insights(data, team_filter)
+    if team_filter == "全聯盟" and len(tabs) > 5:
+        with tabs[5]:
             page_cross_team(data)
 
 
