@@ -133,7 +133,7 @@ def compute_mvp_score(summary: pd.DataFrame = None) -> pd.DataFrame:
         df["MVP_score"] = 50.0
 
     # Rank
-    df["MVP_rank"] = df["MVP_score"].rank(ascending=False).astype(int)
+    df["MVP_rank"] = df["MVP_score"].rank(ascending=False, na_option="bottom").fillna(len(df)).astype(int)
     df.sort_values("MVP_rank", inplace=True)
 
     return df
