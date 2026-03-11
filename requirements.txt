@@ -1,0 +1,26 @@
+# 爬蟲
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# 資料分析
+pandas>=2.1.0
+numpy>=1.25.0,<2.0    # numpy 2.x 可能有版本衝突
+
+# 視覺化
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0      # 互動式圖表（儀表板用）
+
+# 儀表板
+streamlit>=1.30.0
+
+# Excel 輸出
+openpyxl>=3.1.0
+
+# 機器學習
+scikit-learn>=1.3.0
+joblib>=1.3.0       # 模型儲存
+
+# 工具
+tqdm>=4.66.0        # 進度條
+tabulate>=0.9.0     # pandas to_markdown() 需要

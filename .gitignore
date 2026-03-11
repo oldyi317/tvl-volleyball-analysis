@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Data: raw 太大不上傳，processed 保留（儀表板需要讀取）
+data/raw/*.json
+data/raw/*.csv
+data/models/*.pkl
+data/models/*.joblib
+
+# Outputs (generated files)
+outputs/figures/*.png
+outputs/figures/*.svg
+outputs/excel/*.xlsx
+outputs/reports/*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
