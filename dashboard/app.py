@@ -511,6 +511,113 @@ def page_cross_team(data):
             st.plotly_chart(fig, use_container_width=True)
 
 
+# ======== Page: Roster & Career ========
+def page_roster_career():
+    from analysis.career_tracking import (
+        load_rosters, get_player_transfers, get_veteran_players,
+        get_season_roster, get_all_seasons, get_player_career,
+    )
+
+    rosters = load_rosters()
+    if not rosters:
+        st.info("No historical roster data found (data/rosters.json)")
+        return
+
+    all_seasons = get_all_seasons()
+
+    # --- Season Rosters ---
+    st.subheader("📋 各賽季名單")
+    col1, col2 = st.columns(2)
+    with col1:
+        sel_season = st.selectbox("賽季", all_seasons, index=len(all_seasons)-1, key="roster_season")
+    with col2:
+        teams_in_season = list(rosters.get(sel_season, {}).keys())
+        sel_team = st.selectbox("球隊", teams_in_season, key="roster_team") if teams_in_season else None
+
+    if sel_team:
+        roster = get_season_roster(sel_season, sel_team)
+        if roster:
+            roster_df = pd.DataFrame(roster)
+            roster_df = roster_df.rename(columns={"num": "背號", "name": "姓名", "pos": "位置"})
+            # Add markers
+            if "captain" in roster_df.columns:
+                roster_df["姓名"] = roster_df.apply(
+                    lambda r: f"⭐ {r['姓名']}" if r.get("captain") else r["姓名"], axis=1)
+            if "foreign" in roster_df.columns:
+                roster_df["姓名"] = roster_df.apply(
+                    lambda r: f"{r['姓名']} 🌍" if r.get("foreign") else r["姓名"], axis=1)
+            display_cols = ["背號", "姓名", "位置"]
+            st.dataframe(roster_df[display_cols].sort_values("背號"),
+                         hide_index=True, use_container_width=True)
+            st.caption("⭐ = 隊長，🌍 = 外援")
+
+    st.divider()
+
+    # --- Player Career Search ---
+    st.subheader("🔍 球員生涯查詢")
+    # Build all player names from all seasons
+    all_names = set()
+    for season_teams in rosters.values():
+        for players in season_teams.values():
+            for p in players:
+                all_names.add(p["name"])
+    all_names = sorted(all_names)
+
+    search_name = st.selectbox("選擇球員", all_names, key="career_search")
+    if search_name:
+        career = get_player_career(search_name)
+        if career:
+            career_df = pd.DataFrame(career)
+            career_df = career_df.rename(columns={
+                "season": "賽季", "team_original": "當時隊名",
+                "team_current": "現隊名", "num": "背號", "pos": "位置",
+            })
+            display = career_df[["賽季", "當時隊名", "背號", "位置"]].copy()
+            display["隊長"] = career_df.get("captain", False).apply(lambda x: "✅" if x else "")
+            st.dataframe(display, hide_index=True, use_container_width=True)
+
+            # Visual timeline
+            if len(career) > 1:
+                teams_over_time = career_df[["賽季", "當時隊名"]].drop_duplicates()
+                fig = px.scatter(teams_over_time, x="賽季", y="當時隊名",
+                                 size=[20]*len(teams_over_time),
+                                 color="當時隊名", color_discrete_map=TEAM_COLORS)
+                fig.update_traces(marker=dict(size=20))
+                fig.update_layout(height=200, margin=dict(l=0, r=0, t=10, b=0),
+                                  showlegend=False, yaxis_title="")
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # --- Transfers ---
+    st.subheader("🔄 球員流動紀錄")
+    transfers = get_player_transfers()
+    if transfers:
+        t_df = pd.DataFrame(transfers)
+        t_df = t_df.rename(columns={
+            "name": "球員", "from_team": "原球隊", "from_season": "原賽季",
+            "to_team": "新球隊", "to_season": "轉入賽季",
+        })
+        st.dataframe(t_df, hide_index=True, use_container_width=True)
+    else:
+        st.caption("無轉隊紀錄")
+
+    st.divider()
+
+    # --- Veterans ---
+    st.subheader("🏅 資深球員（出賽 3 季以上）")
+    veterans = get_veteran_players(min_seasons=3)
+    if veterans:
+        v_df = pd.DataFrame(veterans)
+        v_df = v_df.rename(columns={
+            "name": "球員", "seasons_played": "出賽季數",
+            "latest_team": "最近球隊", "latest_pos": "位置",
+        })
+        v_df["賽季"] = v_df["seasons"].apply(lambda x: ", ".join(x))
+        st.dataframe(v_df[["球員", "出賽季數", "最近球隊", "位置", "賽季"]],
+                     hide_index=True, use_container_width=True)
+
+
 # ======== Main ========
 def main():
     inject_css()
@@ -557,7 +664,7 @@ def main():
     data = apply_filters(raw_data, team_filter, pos_filter, season_filter)
 
     # Tabs
-    tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢", "🤖 ML 洞察"]
+    tab_names = ["📊 總覽", "🏃 球員分析", "⚔️ 球員比較", "📈 比賽趨勢", "🤖 ML 洞察", "📜 名單/生涯"]
     if team_filter == "全聯盟" and pos_filter == "全部位置":
         tab_names.append("🏆 跨隊比較")
 
@@ -567,9 +674,9 @@ def main():
     with tabs[2]: page_compare(data)
     with tabs[3]: page_trends(data)
     with tabs[4]: page_ml_insights(data)
-    if len(tabs) > 5:
-        with tabs[5]:
-            # Cross-team uses all teams but respects season filter
+    with tabs[5]: page_roster_career()
+    if len(tabs) > 6:
+        with tabs[6]:
             cross_data = apply_filters(raw_data, "全聯盟", "全部位置", season_filter)
             page_cross_team(cross_data)
 
